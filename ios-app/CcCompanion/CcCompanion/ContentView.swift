@@ -58,6 +58,7 @@ struct ContentView: View {
     @StateObject private var groupStore = GroupStore()
     // Build 215 P4 — chat tab unread badge store (跑独立 light polling 不依赖 ChatViewModel)
     @StateObject private var chatBadgeStore = ChatBadgeStore()
+    @StateObject private var chatVM = ChatViewModel()
     @AppStorage("cc_onboarding_completed") private var onboardingCompleted: Bool = false
     @AppStorage("feature_group_view") private var featureGroupView: Bool = false
 
@@ -95,13 +96,13 @@ struct ContentView: View {
         VStack(spacing: 0) {
             Group {
                 switch selectedTab {
-                case 0: NavigationStack { ChatView(onShowFavorites: { showFavorites = true }, scrollToken: chatScrollToken, onEnterTerminal: { selectedTab = 1 }) }
+                case 0: NavigationStack { ChatView(vm: chatVM, onShowFavorites: { showFavorites = true }, scrollToken: chatScrollToken, onEnterTerminal: { selectedTab = 1 }) }
                 // v2.8 R3b 真机修: 从终端返回聊天页时 bump chatScrollToken, 触发 ChatView .onChange(of:scrollToken)→scrollBottom,
                 // 否则视图复用不走 onAppear、token 不变不触发 onChange, 返回后卡在旧滚动位置要手动下拉。
                 case 1: NavigationStack { TerminalView(onBack: { selectedTab = 0; chatScrollToken &+= 1 }) }
                 case 2: NavigationStack { CcSettingsView() }
                 case 3 where featureGroupView: NavigationStack { GroupChatView(store: groupStore) }
-                default: NavigationStack { ChatView(onShowFavorites: { showFavorites = true }, scrollToken: chatScrollToken, onEnterTerminal: { selectedTab = 1 }) }
+                default: NavigationStack { ChatView(vm: chatVM, onShowFavorites: { showFavorites = true }, scrollToken: chatScrollToken, onEnterTerminal: { selectedTab = 1 }) }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

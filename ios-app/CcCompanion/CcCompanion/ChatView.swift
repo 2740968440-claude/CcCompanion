@@ -1124,10 +1124,11 @@ final class ChatViewModel: ObservableObject {
         appIsActive = active
     }
 
-    private func pollDelaySeconds() -> Int {
+    private func pollDelaySeconds() -> TimeInterval {
         if !appIsActive { return 5 }
-        if pollingFailureCount <= 0 { return 1 }
-        return min(16, 1 << min(pollingFailureCount, 4))
+        if pollingFailureCount > 0 { return TimeInterval(min(16, 1 << min(pollingFailureCount, 4))) }
+        // Adaptive: CC 思考中加速到 0.5s，平时 1s
+        return isCcTyping ? 0.5 : 1.0
     }
 
     private func pollOnce() async {
@@ -2891,7 +2892,7 @@ final class ChatViewModel: ObservableObject {
 
 struct ChatView: View {
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var vm = ChatViewModel()
+    @ObservedObject var vm: ChatViewModel
     // v2.6 P1 修: observe ThemeStore, 切主题立即重建 rows (清掉拍一拍 separator 残留, 配合 .patpat render-gate 双保险).
     @ObservedObject private var themeStore = ThemeStore.shared
     @StateObject private var speech = SpeechRecognizer()
