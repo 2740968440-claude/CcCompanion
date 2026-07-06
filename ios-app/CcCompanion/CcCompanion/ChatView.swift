@@ -6842,7 +6842,7 @@ struct ChatBubble: View {
 
 #Preview {
     NavigationStack {
-        ChatView()
+        ChatView(vm: ChatViewModel())
     }
 }
 #if os(iOS)
