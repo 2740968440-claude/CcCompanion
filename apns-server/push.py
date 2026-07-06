@@ -37,11 +37,15 @@ import ipaddress
 import json
 import logging
 import os
+import uuid
 from datetime import datetime, timezone
 import sys
 import threading
 import time
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -3306,47 +3310,25 @@ class PushHandler(BaseHTTPRequestHandler):
                     injected = f"{injected}\n{text}"
         # set typing — assistant 收到 message 在 thinking
         self.state.typing_state = {"is_typing": True, "since": rec["ts"]}
-        # 注入文本到 active tmux session.
-        # 不依赖 ~/scripts/bus_send.py (内部多 agent 协调 file, 公开版用户没有); 存在就走 bus
-        # dispatcher 路由, 不存在 fallback 直接 tmux paste-buffer + send-keys (公开版默认).
+        # 2026-07-05 队列层改造：消息写入队列文件，由 msg_queue_worker.py 负责可靠注入 tmux
+        # 不再直接调 _inject_to_session，避免 tmux paste-buffer -p 丢消息
         target_session = (self.state.active_session or self.state.default_session).strip()
-        # Fix (VPS 用户反馈 2026-06-24 #1 async enqueue): 之前同步等 _inject_to_session 的 tmux
-        # paste/send-keys 完成才返回, 注入期间再发一条会被客户端当成请求未送达 (nginx 看不到第二个
-        # 请求, iOS 报 network connection lost). 改成: 先 fast preflight 确认 target session 可达
-        # (不存在立刻 502, 不假成功), 再把 (可能慢的) 注入丢到后台 daemon thread, 立刻返回. 后台注入
-        # 失败追加一条 system error record + 清 typing, 让用户不会以为消息已被 chain 收到.
-        ok, err = self._chat_send_preflight(target_session)
-        if not ok:
-            self.state.typing_state = {"is_typing": False, "since": rec["ts"]}
-            self._send_json(502, {
-                "ok": False,
-                "error": f"target session '{target_session}' not reachable: {err}",
-                "record": rec,
-            })
-            return
-
-        def _bg_inject(sess: str, payload: str, since_ts: str):
-            inj_ok, inj_err = self._inject_to_session(sess, payload, source="ios-app", sender="iphone")
-            if not inj_ok:
-                try:
-                    self.state.chat.append(
-                        role="system",
-                        text=f"[消息注入失败 inject failed: {inj_err}]",
-                        source="server-inject-error",
-                    )
-                except Exception as e2:
-                    logger.warning("inject failed + error-record append failed: %s / %s", inj_err, e2)
-                self.state.typing_state = {"is_typing": False, "since": since_ts}
-
-        threading.Thread(
-            target=_bg_inject,
-            args=(target_session, injected, rec["ts"]),
-            daemon=True,
-        ).start()
-        # 200 + queued: user record 已落 (poll 立即可见), 注入已排队后台执行. 客户端把它当发送成功.
-        self._send_json(200, {"ok": True, "record": rec, "queued": True})
-
-    def _handle_sticker_upload(self):
+        try:
+            queue_entry = json.dumps({
+                "id": str(uuid.uuid4()),
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "source": "ccc",
+                "text": injected,
+                "target_session": target_session,
+                "status": "pending",
+                "attempts": 0,
+            }, ensure_ascii=False)
+            with open("/tmp/msg_inbox.jsonl", "a") as qf:
+                qf.write(queue_entry + "\n")
+            logger.info("queued msg for %s: %s...", target_session, injected[:80])
+        except Exception as e:
+            logger.error("failed to write queue: %s", e)
+        self._send_json(200, {"ok": True, "record": rec})
         """Upload a custom sticker as a raw image body plus query metadata."""
         import uuid as _uuid
         from urllib.parse import parse_qs, unquote, urlparse

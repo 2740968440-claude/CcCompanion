@@ -3805,6 +3805,13 @@ private struct ChatInputBar: View {
                     }
                     .onChange(of: draftLocal) { oldValue, newValue in
                         vm.draft = newValue
+                        // 2026-07-06 持久化草稿到 UserDefaults，切 app 回来也能恢复
+                        if newValue.isEmpty {
+                            UserDefaults.standard.removeObject(forKey: "cc.chatDraft")
+                        } else {
+                            UserDefaults.standard.set(newValue, forKey: "cc.chatDraft")
+                        }
+                        // Phase A — if slash popover visible and user pressed enter (\n), swallow to select instead of commit
                         if newValue.hasSuffix("\n") && !oldValue.hasSuffix("\n") {
                             if slashPopoverVisible, slashCandidates.indices.contains(slashHighlightIndex) {
                                 draftLocal = String(newValue.dropLast())
@@ -3871,6 +3878,11 @@ private struct ChatInputBar: View {
         .onAppear {
             // 2026-05-10 用户 push 切 tab 不丢草稿 view 重建 onAppear 从 vm.draft init draftLocal
             if draftLocal.isEmpty && !vm.draft.isEmpty { draftLocal = vm.draft }
+            // 2026-07-06 切 app 回来时 @State 可能被重置，从 UserDefaults 兜底恢复
+            if draftLocal.isEmpty, let saved = UserDefaults.standard.string(forKey: "cc.chatDraft"), !saved.isEmpty {
+                draftLocal = saved
+                vm.draft = saved
+            }
             // 切 chat tab 回来时重选 placeholder (不每帧动)
             storedPlaceholder = ChatInputBar.placeholders.randomElement() ?? "Waiting…"
         }
@@ -3979,6 +3991,8 @@ private struct ChatInputBar: View {
         // quoted message is a separate user action without a race window.
         draftLocal = ""
         vm.draft = ""
+        // 2026-07-06 发送后清除持久化草稿
+        UserDefaults.standard.removeObject(forKey: "cc.chatDraft")
         // 2026-05-07 macCatalyst SwiftUI TextField axis:.vertical 跟 @State binding 同步 race 加 main.async 双重 clear
         DispatchQueue.main.async { self.draftLocal = "" }
         Task { await vm.send(text: text) }
