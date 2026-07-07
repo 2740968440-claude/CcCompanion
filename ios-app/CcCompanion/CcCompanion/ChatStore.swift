@@ -226,10 +226,43 @@ final class ChatStore {
                 t.add(column: "turnId", .text)
             }
         }
+        // 2026-07-07 16:57 修复：思考文本持久化，切主题/视图重建时从DB恢复thinkingByTurn
+        migrator.registerMigration("v5_thinking_cache") { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS thinking_cache (
+                    turn_id TEXT PRIMARY KEY,
+                    text TEXT NOT NULL
+                );
+            """)
+        }
         try migrator.migrate(q)
     }
 
     var isAvailable: Bool { dbQueue != nil }
+
+    // 2026-07-07 16:57: 思考文本持久化缓存，切主题/视图重建时恢复thinkingByTurn
+    func saveThinking(turnId: String, text: String) {
+        guard let dbQueue, !turnId.isEmpty, !text.isEmpty else { return }
+        try? dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT OR REPLACE INTO thinking_cache (turn_id, text) VALUES (?, ?)
+            """, arguments: [turnId, text])
+        }
+    }
+
+    func loadAllThinking() -> [String: String] {
+        guard let dbQueue else { return [:] }
+        var result: [String: String] = [:]
+        (try? dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT turn_id, text FROM thinking_cache")
+            for row in rows {
+                if let tid: String = row["turn_id"], let text: String = row["text"] {
+                    result[tid] = text
+                }
+            }
+        })
+        return result
+    }
 
     func latest(limit: Int = 200) -> [ChatMessage] {
         guard let dbQueue else { return [] }

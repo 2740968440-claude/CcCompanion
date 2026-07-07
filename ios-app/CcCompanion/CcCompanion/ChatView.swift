@@ -1250,6 +1250,8 @@ final class ChatViewModel: ObservableObject {
         thinkingFetchedTurns.insert(tid)
         thinkingInFlightTurns.remove(tid)
         thinkingPlaceholderSince.removeValue(forKey: tid)
+        // 2026-07-07 16:57: 持久化到GRDB，切主题/视图重建时从缓存恢复
+        chatStore.saveThinking(turnId: tid, text: text)
         consecutiveEmptyThinkingTurns = 0
         noThinkingPipeline = false
     }
@@ -1552,6 +1554,11 @@ final class ChatViewModel: ObservableObject {
         self.messages = cached
         self.lastTs = cached.last?.ts
         self.hasMoreEarlier = chatStore.before(ts: cached.first?.ts ?? "", limit: 1).isEmpty == false
+        // 2026-07-07 16:57: 从GRDB恢复思考链缓存，合并到thinkingByTurn（已在内存中的不覆盖）
+        let dbThinking = chatStore.loadAllThinking()
+        for (tid, text) in dbThinking where thinkingByTurn[tid] == nil {
+            thinkingByTurn[tid] = text
+        }
         // 2026-05-12 — re-merge any persisted optimistic-failed records on top of
         // the freshly-loaded server cache (kept as ephemeral, no GRDB write).
         self.restorePendingFailedMessages()
