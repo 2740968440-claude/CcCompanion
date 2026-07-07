@@ -3662,6 +3662,28 @@ private struct ChatInputBar: View {
     // 2026-05-07 用户 catch chain working 起一瞬间 stop button 闪一下 加 0.5s 延迟显示防闪
     @State private var delayedIsWorking: Bool = false
     @State private var commitPending: Bool = false
+
+    // 2026-07-07 17:20 修复：手写 init，视图重建时从 vm.draft / UserDefaults 初始化草稿
+    // 避免视图复用不走 onAppear 导致 draftLocal 为空
+    init(vm: ChatViewModel, speech: SpeechRecognizer, inputFocused: FocusState<Bool>.Binding,
+         imagePreviews: Binding<[ImagePreview]>, onImage: @escaping () -> Void,
+         onFile: @escaping () -> Void, onCamera: @escaping () -> Void,
+         onTodo: @escaping () -> Void, onLocation: @escaping () -> Void,
+         scrollToken: Int) {
+        self._vm = ObservedObject(wrappedValue: vm)
+        self._speech = ObservedObject(wrappedValue: speech)
+        self.inputFocused = inputFocused
+        self._imagePreviews = imagePreviews
+        self.onImage = onImage
+        self.onFile = onFile
+        self.onCamera = onCamera
+        self.onTodo = onTodo
+        self.onLocation = onLocation
+        self.scrollToken = scrollToken
+        let saved = !vm.draft.isEmpty ? vm.draft
+            : (UserDefaults.standard.string(forKey: "cc.chatDraft") ?? "")
+        self._draftLocal = State(initialValue: saved)
+    }
     // 2026-05-11 Phase A — slash command popover
     @State private var slashHighlightIndex: Int = 0
     // v2.7 B — 表情包面板 (所有主题). 表情按钮 → 弹 StickerPickerSheet 发/传表情包.
