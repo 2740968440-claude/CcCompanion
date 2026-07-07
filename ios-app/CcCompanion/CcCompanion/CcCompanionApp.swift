@@ -97,4 +97,6 @@ struct CcCompanionApp: App {
 
 extension Notification.Name {
     static let ccPasteFromClipboard = Notification.Name("ccPasteFromClipboard")
+    // 2026-07-07 16:47 修复：切回聊天tab时通知ChatInputBar恢复草稿（scrollToken不可靠，视图复用时onChange不走）
+    static let ccChatTabDidActivate = Notification.Name("ccChatTabDidActivate")
 }

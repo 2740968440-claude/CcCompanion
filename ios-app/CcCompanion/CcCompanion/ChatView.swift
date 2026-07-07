@@ -3889,8 +3889,9 @@ private struct ChatInputBar: View {
             // 切 chat tab 回来时重选 placeholder (不每帧动)
             storedPlaceholder = ChatInputBar.placeholders.randomElement() ?? "Waiting…"
         }
-        .onChange(of: scrollToken) { _, _ in
-            // 2026-07-07 微信主题下从终端返回时视图复用不走 onAppear，草稿丢失
+        .onReceive(NotificationCenter.default.publisher(for: .ccChatTabDidActivate)) { _ in
+            // 2026-07-07 16:47 修复：微信主题下从终端返回时视图复用不走onAppear，草稿丢失
+            // scrollToken的onChange在视图复用时不可靠，改用通知——切回聊天tab时ContentView发通知，ChatInputBar收听恢复
             if draftLocal.isEmpty && !vm.draft.isEmpty { draftLocal = vm.draft }
             if draftLocal.isEmpty, let saved = UserDefaults.standard.string(forKey: "cc.chatDraft"), !saved.isEmpty {
                 draftLocal = saved

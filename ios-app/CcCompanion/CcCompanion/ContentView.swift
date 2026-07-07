@@ -164,6 +164,8 @@ struct ContentView: View {
                 chatScrollToken &+= 1
                 // Build 215 P4 — 进 chat tab 视为已读, 清 badge
                 chatBadgeStore.markAllRead()
+                // 2026-07-07 16:47 修复：通知ChatInputBar恢复草稿（scrollToken在视图复用时不可靠）
+                NotificationCenter.default.post(name: .ccChatTabDidActivate, object: nil)
             }
             // Build 217 T4 — 进群聊 tab 同样清 unread + mention 红 @
             // r5: 同 ChatBadgeStore pattern push isGroupTabActive 让 fetch 在屏时不增 badge
