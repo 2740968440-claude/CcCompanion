@@ -65,6 +65,8 @@ from favorites import Favorites
 from worklog import Worklog
 from reminders import ReminderStore
 from timeline import Timeline
+from approval_store import ApprovalStore
+from approval_watcher import wait_and_inject, ApprovalWatcherDaemon
 import wechat_summary
 from tts import TTS
 from settings import Settings
@@ -415,6 +417,11 @@ class ServerState:
         # 定时 reminder 队列
         reminders_path = Path(self.token_store_path).parent / "reminders.jsonl"
         self.reminders = ReminderStore(reminders_path)
+        # 审批事件管理 (2026-07-06 17:55)
+        approval_path = Path(self.token_store_path).parent / "approvals.jsonl"
+        self.approvals = ApprovalStore(approval_path)
+        # 审批后台 watcher (检测 prompt 就绪 + 注入 tmux)
+        self.approval_watcher = ApprovalWatcherDaemon(self.approvals)
         # 服务器启动时间 (unix timestamp) — 用于 uptime 计算
         self.started_at: float = time.time()
         # 完整 config 引用 (anthropic dashboard url 等)
@@ -853,6 +860,9 @@ class PushHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json(500, {"error": str(e)})
             return
+        if self.path.startswith("/approval/list"):
+            self._handle_approval_list()
+            return
         if self.path == "/health":
             self._send_json(
                 200,
@@ -1153,6 +1163,10 @@ class PushHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "action": "lock"})
             except Exception as e:
                 self._send_json(500, {"error": str(e)})
+            return
+        elif self.path == "/approval":
+            # 用户点允许/拒绝审批卡片
+            self._handle_approval_post(body)
             return
         elif self.path == "/settings":
             for k, v in body.items():
@@ -1768,7 +1782,12 @@ class PushHandler(BaseHTTPRequestHandler):
         try:
             chat_records = self.state.chat.read_since(since_ts=since, limit=limit)
             task_records = self.state.task_buffer.list_since(since_ts=since)
-            records = sorted(chat_records + task_records, key=lambda r: r.get("ts", ""))
+            # 审批事件混入聊天流 (2026-07-06 17:55)
+            approval_events = self._approval_events_for_chat(since)
+            records = sorted(
+                chat_records + task_records + approval_events,
+                key=lambda r: r.get("ts", ""),
+            )
             last_ts = records[-1].get("ts") if records else since
             now = datetime.now(timezone.utc).astimezone().isoformat(timespec="milliseconds")
             self._send_json(
@@ -4907,6 +4926,118 @@ class PushHandler(BaseHTTPRequestHandler):
             },
         )
 
+    # ---------- approval handlers (2026-07-06 17:55) ----------
+
+    def _handle_approval_post(self, body: dict[str, Any]):
+        """POST /approval — 用户点允许/拒绝审批卡片。
+
+        Body: {approval_id: str, action: "allow"|"deny"}
+
+        收到后立即更新状态到 approved_waiting_prompt 或 denied，
+        然后异步等待 prompt 就绪后注入 tmux。
+        """
+        approval_id = str(body.get("approval_id") or "").strip()
+        action = str(body.get("action") or "").strip().lower()
+
+        if not approval_id:
+            self._send_json(400, {"error": "approval_id required"})
+            return
+        if action not in ("allow", "deny"):
+            self._send_json(400, {"error": "action must be allow or deny"})
+            return
+
+        evt = self.state.approvals.get(approval_id)
+        if evt is None:
+            self._send_json(404, {"error": "approval not found"})
+            return
+
+        if evt["status"] not in ("pending",):
+            self._send_json(200, {"ok": True, "status": evt["status"], "detail": "already handled"})
+            return
+
+        if action == "deny":
+            # Deny: 更新状态 + 立刻注入 n (不等 prompt)
+            updated = self.state.approvals.update(approval_id, "denied")
+            import threading
+            threading.Thread(
+                target=lambda: wait_and_inject(approval_id, "deny", "cc-tg"),
+                daemon=True,
+            ).start()
+            self._send_json(200, {"ok": True, "status": "denied", "detail": "n injected"})
+            return
+
+        if action == "allow":
+            # Allow: 更新到 approved_waiting_prompt, 后台 daemon 检测 prompt 就绪后注入
+            updated = self.state.approvals.update(approval_id, "approved_waiting_prompt")
+            self._send_json(200, {"ok": True, "status": "approved_waiting_prompt", "detail": "waiting for prompt"})
+            return
+
+    def _handle_approval_list(self):
+        """GET /approval/list — 列出所有 pending 审批。"""
+        pending = self.state.approvals.list_pending()
+        self._send_json(200, {"ok": True, "approvals": pending, "count": len(pending)})
+
+    def _approval_events_for_chat(self, since: str | None) -> list[dict[str, Any]]:
+        """将 pending 审批事件转为聊天消息格式，混入 /chat/poll。
+
+        只返回 since 之后创建的 pending/approved_waiting_prompt 事件。
+        status 变化时 (→ approved/denied) 也生成一条更新消息让客户端更新卡片。
+        """
+        events: list[dict[str, Any]] = []
+        recent = self.state.approvals.list_recent(limit=30)
+        for evt in recent:
+            if since and evt.get("ts", "") <= since:
+                continue
+
+            status = evt["status"]
+            display = evt.get("display", evt.get("command", ""))
+
+            if status == "pending":
+                events.append({
+                    "ts": evt["ts"],
+                    "type": "approval",
+                    "approval_id": evt["id"],
+                    "role": "system",
+                    "text": f"⏳ 需要批准\n{display}",
+                    "command": evt.get("command", ""),
+                    "status": "pending",
+                    "actions": ["allow", "deny"],
+                })
+            elif status == "approved_waiting_prompt":
+                events.append({
+                    "ts": evt["updated_at"],
+                    "type": "approval_update",
+                    "approval_id": evt["id"],
+                    "role": "system",
+                    "text": f"⏳ 等待终端就绪…\n{display}",
+                    "status": "approved_waiting_prompt",
+                    "actions": [],
+                })
+            elif status == "approved":
+                events.append({
+                    "ts": evt["updated_at"],
+                    "type": "approval_update",
+                    "approval_id": evt["id"],
+                    "role": "system",
+                    "text": f"已批准\n{display}",
+                    "status": "approved",
+                    "actions": [],
+                })
+            elif status == "denied":
+                events.append({
+                    "ts": evt["updated_at"],
+                    "type": "approval_update",
+                    "approval_id": evt["id"],
+                    "role": "system",
+                    "text": f"已拒绝\n{display}",
+                    "status": "denied",
+                    "actions": [],
+                })
+
+        return events
+
+    # ---------- end approval handlers ----------
+
 
 # ---------- entry ----------
 
@@ -4958,6 +5089,8 @@ def run_server(state: ServerState):
         target=cleanup_loop, args=(state,), daemon=True, name="cleanup"
     )
     cleanup_thread.start()
+    # 审批后台 watcher (2026-07-06 17:55)
+    state.approval_watcher.start()
     wechat_summary.start_hourly_thread()
     try:
         server.serve_forever()

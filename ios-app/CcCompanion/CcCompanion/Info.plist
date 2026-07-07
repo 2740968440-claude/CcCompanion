@@ -26,6 +26,17 @@
 	<array>
 		<string>remote-notification</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.yychenzhou.cccompanion</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>ccc</string>
+			</array>
+		</dict>
+	</array>
 	<key>UIAppFonts</key>
 	<array>
 		<string>SourceSerif4-Regular.otf</string>

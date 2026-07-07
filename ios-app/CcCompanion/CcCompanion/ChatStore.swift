@@ -34,6 +34,8 @@ struct StoredChatMessage: Codable, FetchableRecord, MutablePersistableRecord {
     var metadataJSON: String?
     var stickerId: String?
     var patpatJSON: String?
+    // 2026-07-07 16:15 修复：turnId 持久化到 GRDB。原来不进库，切主题 loadCachedHistory 后 msg.turnId=nil， thinkingByTurn 有数据但匹配不上。
+    var turnId: String?
 
     init(message: ChatMessage) {
         self.id = message.id
@@ -55,6 +57,7 @@ struct StoredChatMessage: Codable, FetchableRecord, MutablePersistableRecord {
         self.metadataJSON = Self.encode(message.metadata)
         self.stickerId = message.stickerId
         self.patpatJSON = Self.encode(message.patpat)
+        self.turnId = message.turnId
     }
 
     init(row: Row) {
@@ -77,6 +80,7 @@ struct StoredChatMessage: Codable, FetchableRecord, MutablePersistableRecord {
         self.metadataJSON = row["metadataJSON"]
         self.stickerId = row["stickerId"]
         self.patpatJSON = row["patpatJSON"]
+        self.turnId = row["turnId"]
     }
 
     func chatMessage() -> ChatMessage {
@@ -98,7 +102,8 @@ struct StoredChatMessage: Codable, FetchableRecord, MutablePersistableRecord {
             location: Self.decode(ChatLocation.self, from: locationJSON),
             metadata: Self.decode(ChatMetadata.self, from: metadataJSON),
             stickerId: stickerId,
-            patpat: Self.decode(PatPatPayload.self, from: patpatJSON)
+            patpat: Self.decode(PatPatPayload.self, from: patpatJSON),
+            turnId: turnId
         )
     }
 
@@ -213,6 +218,12 @@ final class ChatStore {
         migrator.registerMigration("v3_add_quoted_role") { db in
             try db.alter(table: "stored_chat_message") { t in
                 t.add(column: "quotedRole", .text)
+            }
+        }
+        // 2026-07-07 16:15 修复：turnId 不进 GRDB 导致切主题后思考链丢失
+        migrator.registerMigration("v4_add_turn_id") { db in
+            try db.alter(table: "stored_chat_message") { t in
+                t.add(column: "turnId", .text)
             }
         }
         try migrator.migrate(q)

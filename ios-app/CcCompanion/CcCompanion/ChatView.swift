@@ -360,7 +360,7 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     var patpat: PatPatPayload? = nil
     // Phase 3 (thinking-stream-render): server 给 assistant ios_reply 生成的 turn_id.
     // iOS 用它向 GET /v1/thinking?turn_id=<id> 拉对应 thinking 文本, 对齐到这条 reply.
-    // 非 assistant / 旧记录为 nil. 不进 GRDB (transient, 实时 poll 带来).
+    // 非 assistant / 旧记录为 nil。2026-07-07 起已写入 GRDB (v4 migration)。
     var turnId: String? = nil
     // 2026-05-12 optimistic-send sort-fix: `ts` now holds the real ISO send
     // timestamp (so failed bubbles sort chronologically alongside server records
@@ -3248,7 +3248,8 @@ struct ChatView: View {
                     onFile: { showFileImporter = true },
                     onCamera: { showCameraPicker = true },
                     onTodo: { showTodoInput = true },
-                    onLocation: {}
+                    onLocation: {},
+                    scrollToken: scrollToken
                 )
             }
         }
@@ -3646,6 +3647,7 @@ private struct ChatInputBar: View {
     let onCamera: () -> Void
     let onTodo: () -> Void
     let onLocation: () -> Void
+    let scrollToken: Int
 
     @State private var draftLocal: String = ""
     // issue #4 fix: prefix = draft text before speech started; replaced (not appended) on each partial
@@ -3886,6 +3888,14 @@ private struct ChatInputBar: View {
             }
             // 切 chat tab 回来时重选 placeholder (不每帧动)
             storedPlaceholder = ChatInputBar.placeholders.randomElement() ?? "Waiting…"
+        }
+        .onChange(of: scrollToken) { _, _ in
+            // 2026-07-07 微信主题下从终端返回时视图复用不走 onAppear，草稿丢失
+            if draftLocal.isEmpty && !vm.draft.isEmpty { draftLocal = vm.draft }
+            if draftLocal.isEmpty, let saved = UserDefaults.standard.string(forKey: "cc.chatDraft"), !saved.isEmpty {
+                draftLocal = saved
+                vm.draft = saved
+            }
         }
         // 2026-05-07 stop button 加 0.5s 延迟显示防发送瞬间闪
         .onChange(of: vm.isCcWorking) { _, working in

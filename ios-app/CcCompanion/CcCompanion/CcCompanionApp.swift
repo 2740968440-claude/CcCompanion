@@ -77,6 +77,10 @@ struct CcCompanionApp: App {
             ContentView()
                 .ccSerifTheme()
                 .whatsNewGate()   // v1.2 新 build 首启弹 What's New
+                .onOpenURL { url in
+                    // Bark 推送点开 → 自动打开 CCC
+                    print("[Cc] onOpenURL: \(url)")
+                }
         }
         #if targetEnvironment(macCatalyst)
         .commands {
