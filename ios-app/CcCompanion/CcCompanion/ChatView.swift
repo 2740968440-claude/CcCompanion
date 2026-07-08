@@ -368,6 +368,12 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     // `localId` is the stable tracking key for sendingIds / failedIds /
     // pendingFailedMessages. nil for any record that originated server-side.
     var localId: String? = nil
+    // 审批卡片 (2026-07-08): server 混入 /chat/poll 的审批记录, type="approval"/"approval_update"
+    var type: String? = nil
+    var approvalId: String? = nil
+    var command: String? = nil
+    var approvalStatus: String? = nil
+    var actions: [String]? = nil
 
     enum CodingKeys: String, CodingKey {
         case ts, role, text, source, reactions
@@ -386,6 +392,11 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         case patpat
         case turnId = "turn_id"
         case localId = "local_id"
+        case type
+        case approvalId = "approval_id"
+        case command
+        case approvalStatus = "status"
+        case actions
     }
 
     var id: String { localId ?? (ts + role) }
@@ -551,6 +562,17 @@ actor ChatNetworkClient {
         return decoded?.record
     }
 
+    // 审批卡片 (2026-07-08): POST /approval {approval_id, action}
+    func sendApproval(approvalId: String, action: String) async {
+        let url = CcServerConfig.serverURL.appendingPathComponent("approval")
+        var request = CcServerConfig.authenticatedRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = ["approval_id": approvalId, "action": action]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        _ = try? await session.data(for: request)
+    }
+
     // Phase 3 (thinking-stream-render): 按 turn_id 拉 thinking 文本.
     // server GET /v1/thinking?turn_id=<id>&limit=<n> 返回 records (phase 1 已上线).
     // 同一 turn 可能多条 thinking record, 按 created_at 顺序拼接.
@@ -592,12 +614,25 @@ struct ToolStack: Identifiable, Hashable {
     let summary: String
 }
 
+// 审批卡片事件 (2026-07-08): server 推送的审批记录, 聊天里渲染成交互卡片
+struct ApprovalEvent: Identifiable, Hashable, Sendable {
+    let id: String
+    let ts: String
+    let approvalId: String
+    let text: String
+    let command: String?
+    let status: String   // pending / approved_waiting_prompt / approved / denied
+    let actions: [String]  // ["allow", "deny"]
+}
+
 enum ChatRowItem: Identifiable, Hashable {
     case message(ChatMessage, showTime: Bool)
     case separator(label: String, id: String)
     case toolStack(ToolStack)
     // v2.6 P1 修: 拍一拍本地系统消息独立类型 (不再伪装成 .separator). 渲染层只在 .wechat 画, 非微信 EmptyView, 结构上杜绝切主题泄漏.
     case patpat(PatPatEvent)
+    // 审批卡片 (2026-07-08)
+    case approval(ApprovalEvent)
 
     var id: String {
         switch self {
@@ -605,6 +640,7 @@ enum ChatRowItem: Identifiable, Hashable {
         case .separator(_, let id): return id
         case .toolStack(let s): return "stack_\(s.id)"
         case .patpat(let e): return e.id
+        case .approval(let a): return a.id
         }
     }
 
@@ -651,6 +687,8 @@ final class ChatViewModel: ObservableObject {
                let last = messages.last,
                last.role != "move",
                last.role != "task",  // task 进 toolStack 全量 rebuild
+               last.type != "approval",       // 审批记录走全量 rebuild (2026-07-08)
+               last.type != "approval_update",
                !needsNewSeparator(prev: oldValue.last, cur: last) {
                 appendIncrementalRow(last, prev: oldValue.last)
             } else {
@@ -690,6 +728,8 @@ final class ChatViewModel: ObservableObject {
     @Published var uploadQueue: [PendingUpload] = []
     // v2.6 拍一拍: 本地系统消息事件 (非真消息, 仅微信主题渲染成居中灰字, rebuild 时按时间合并进 rows).
     @Published var patpatEvents: [PatPatEvent] = []
+    // 审批卡片 (2026-07-08): approvalId → ApprovalEvent, 用于状态更新和去重
+    @Published var approvalEvents: [String: ApprovalEvent] = [:]
     // v2.6 P2 修: 拍一拍 ping 的 server 规范 id (持久 UserDefaults, 重启仍隐藏不冒绿气泡). isPatPatPing 按 id 精确命中, 不按公开前缀吞.
     private var hiddenPatPatPingIds: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "patpat_hidden_ids") ?? [])
     // 网络异常拿不到 id 时的 60s exact-text 兜底 (不永久, 不按前缀).
@@ -938,7 +978,53 @@ final class ChatViewModel: ObservableObject {
             }
             // 非 task: 先 flush
             flushTaskBuffer()
+
             let cur = Self.parseChatDate(msg.ts, formatter: formatter)
+
+            // 审批卡片 (2026-07-08): server 混入的 approval/approval_update 记录
+            if msg.type == "approval", let aid = msg.approvalId {
+                let event = ApprovalEvent(
+                    id: msg.id,
+                    ts: msg.ts,
+                    approvalId: aid,
+                    text: msg.text,
+                    command: msg.command,
+                    status: msg.approvalStatus ?? "pending",
+                    actions: msg.actions ?? ["allow", "deny"]
+                )
+                approvalEvents[aid] = event
+                out.append(.approval(event))
+                if let cur = cur { lastDate = cur }
+                continue
+            }
+            if msg.type == "approval_update", let aid = msg.approvalId {
+                var updated = approvalEvents[aid] ?? ApprovalEvent(
+                    id: msg.id, ts: msg.ts, approvalId: aid,
+                    text: msg.text, command: msg.command,
+                    status: msg.approvalStatus ?? "pending",
+                    actions: msg.actions ?? []
+                )
+                // 更新状态和文案
+                updated = ApprovalEvent(
+                    id: updated.id, ts: updated.ts, approvalId: aid,
+                    text: msg.text.isEmpty ? updated.text : msg.text,
+                    command: msg.command ?? updated.command,
+                    status: msg.approvalStatus ?? updated.status,
+                    actions: updated.actions
+                )
+                approvalEvents[aid] = updated
+                // 找到已有卡片并更新, 找不到则追加
+                if let idx = out.lastIndex(where: {
+                    if case .approval(let a) = $0, a.approvalId == aid { return true }
+                    return false
+                }) {
+                    out[idx] = .approval(updated)
+                } else {
+                    out.append(.approval(updated))
+                }
+                if let cur = cur { lastDate = cur }
+                continue
+            }
             let needSep: Bool = {
                 guard let cur = cur else { return false }
                 guard let prev = lastDate else { return true }
@@ -1440,6 +1526,14 @@ final class ChatViewModel: ObservableObject {
         } catch {
             // 静默
         }
+    }
+
+    // 审批卡片 (2026-07-08): 批准/拒绝
+    func approve(_ event: ApprovalEvent) async {
+        await ChatNetworkClient.shared.sendApproval(approvalId: event.approvalId, action: "allow")
+    }
+    func deny(_ event: ApprovalEvent) async {
+        await ChatNetworkClient.shared.sendApproval(approvalId: event.approvalId, action: "deny")
     }
 
     func react(_ msg: ChatMessage, emoji: String) async {
@@ -3045,6 +3139,12 @@ struct ChatView: View {
             } else {
                 EmptyView()
             }
+        case .approval(let event):
+            ApprovalCardView(
+                event: event,
+                onAllow: { Task { await vm.approve(event) } },
+                onDeny: { Task { await vm.deny(event) } }
+            )
         case .message(let msg, let showTime):
             ChatMessageListRow(
                 message: msg,
@@ -8132,3 +8232,125 @@ struct DateJumpSheet: View {
         }
     }
 }
+
+// MARK: - 审批卡片 (2026-07-08)
+
+struct ApprovalCardView: View {
+    let event: ApprovalEvent
+    let onAllow: () -> Void
+    let onDeny: () -> Void
+
+    @State private var showDetail = false
+    @Environment(\.colorScheme) var colorScheme
+
+    private var isResolved: Bool {
+        event.status == "approved" || event.status == "denied"
+    }
+
+    private var statusIcon: String {
+        switch event.status {
+        case "approved": return "checkmark.circle.fill"
+        case "denied": return "xmark.circle.fill"
+        default: return "clock.fill"
+        }
+    }
+
+    private var statusColor: Color {
+        switch event.status {
+        case "approved": return .green
+        case "denied": return .red
+        default: return .orange
+        }
+    }
+
+    private var shortText: String {
+        // 取第一行作为简短描述 (server 格式: "⏳ 需要批准\nrm /tmp/test")
+        if let firstLine = event.text.split(separator: "\n").first {
+            return String(firstLine)
+        }
+        return event.text
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // 标题行
+            HStack(spacing: 6) {
+                Image(systemName: statusIcon)
+                    .foregroundStyle(statusColor)
+                Text(shortText)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Spacer()
+                if isResolved {
+                    Text(statusLabel)
+                        .font(.caption)
+                        .foregroundStyle(statusColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(statusColor.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+            }
+
+            // 展开详细内容
+            if showDetail, let cmd = event.command, !cmd.isEmpty {
+                Text(cmd)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(colorScheme == .dark ? Color.black.opacity(0.3) : Color.gray.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            // 按钮行
+            if !isResolved {
+                HStack(spacing: 8) {
+                    Button(action: onAllow) {
+                        Label("允许", systemImage: "checkmark")
+                            .font(.subheadline.weight(.medium))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+
+                    Button(action: onDeny) {
+                        Label("拒绝", systemImage: "xmark")
+                            .font(.subheadline.weight(.medium))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+
+                    Button(action: { withAnimation(.easeInOut(duration: 0.2)) { showDetail.toggle() } }) {
+                        Label("详细", systemImage: showDetail ? "chevron.up" : "chevron.down")
+                            .font(.subheadline.weight(.medium))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(colorScheme == .dark ? Color(.systemGray6) : Color(.systemBackground))
+                .shadow(color: .black.opacity(0.06), radius: 4, x: 0, y: 2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(statusColor.opacity(isResolved ? 0 : 0.3), lineWidth: isResolved ? 0 : 1)
+        )
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+    }
+
+    private var statusLabel: String {
+        switch event.status {
+        case "approved": return "已批准"
+        case "denied": return "已拒绝"
+        default: return ""
+        }
+    }
+}
+
