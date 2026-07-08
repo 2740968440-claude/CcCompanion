@@ -4945,6 +4945,12 @@ private struct ChatListView: View {
                 insertion: .opacity.combined(with: .move(edge: .bottom)),
                 removal: .opacity
             ))
+        case .approval(let event):
+            ApprovalCardView(
+                event: event,
+                onAllow: { Task { await vm.approve(event) } },
+                onDeny: { Task { await vm.deny(event) } }
+            )
         }
     }
 
