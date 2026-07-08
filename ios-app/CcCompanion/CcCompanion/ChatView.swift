@@ -8270,11 +8270,20 @@ struct ApprovalCardView: View {
     }
 
     private var shortText: String {
-        // 取第一行作为简短描述 (server 格式: "⏳ 需要批准\nrm /tmp/test")
+        // 取第一行作为标题 (server 格式: "⏳ 需要批准\ndescription")
         if let firstLine = event.text.split(separator: "\n").first {
             return String(firstLine)
         }
         return event.text
+    }
+
+    private var detailText: String? {
+        // 第二行及之后是描述内容
+        let lines = event.text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
+        if lines.count > 1 {
+            return String(lines[1])
+        }
+        return nil
     }
 
     var body: some View {
@@ -8298,7 +8307,15 @@ struct ApprovalCardView: View {
                 }
             }
 
-            // 展开详细内容
+            // 描述行 (命令简述, 始终显示)
+            if let detail = detailText {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            // 展开详细内容 (原始命令)
             if showDetail, let cmd = event.command, !cmd.isEmpty {
                 Text(cmd)
                     .font(.caption)
