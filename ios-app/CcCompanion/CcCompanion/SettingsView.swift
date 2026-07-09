@@ -761,6 +761,9 @@ struct CcSettingsView: View {
                     }
                 }
 
+                // 配置方案 — Claude settings preset switcher
+                ClaudePresetSection()
+
                 groupConfigSection
 
                 // Group 7.5 聊天字号
@@ -2416,6 +2419,237 @@ struct TerminalSessionOrderView: View {
             }
         } catch {
             toast = "保存失败: \(error.localizedDescription)"
+        }
+    }
+}
+
+// build227 — 切换预置方案 (Claude Preset Section)
+struct ClaudePresetSection: View {
+    struct Preset: Codable, Identifiable {
+        let id: String
+        let label: String
+        let file: String
+        let description: String
+    }
+
+    struct PresetResponse: Codable {
+        let ok: Bool
+        let presets: [Preset]
+        let active: String
+    }
+
+    @State private var presets: [Preset] = []
+    @State private var activeId: String = ""
+    @State private var loading: Bool = true
+    @State private var processing: Bool = false
+    @State private var toast: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("配置方案")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(Color.ccTextDim)
+                .tracking(1.2)
+                .padding(.bottom, 6)
+
+            VStack(spacing: 0) {
+                if loading {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                            .tint(Color.ccAccent)
+                        Spacer()
+                    }
+                    .padding(.vertical, 20)
+                } else if presets.isEmpty {
+                    HStack {
+                        Spacer()
+                        Text("无可用配置方案")
+                            .font(.system(.callout, design: .monospaced))
+                            .foregroundStyle(Color.ccTextDim)
+                        Spacer()
+                    }
+                    .padding(.vertical, 20)
+                } else {
+                    ForEach(presets) { preset in
+                        Button {
+                            Task { await applyPreset(preset.id) }
+                        } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 8) {
+                                        Text(preset.label)
+                                            .font(.ccSerifAdaptive(size: 15))
+                                            .foregroundStyle(preset.id == activeId ? Color.ccAccent : Color.ccText)
+                                            .bold(preset.id == activeId)
+
+                                        if preset.id == activeId {
+                                            Text("ACTIVE")
+                                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                                .padding(.horizontal, 5)
+                                                .padding(.vertical, 2)
+                                                .background(Color.ccAccent.opacity(0.15))
+                                                .foregroundStyle(Color.ccAccent)
+                                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                                        }
+                                    }
+
+                                    Text(preset.description)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .foregroundStyle(Color.ccTextDim)
+                                        .multilineTextAlignment(.leading)
+                                }
+                                Spacer()
+                                if preset.id == activeId {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundStyle(Color.ccAccent)
+                                        .padding(.top, 2)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(processing)
+
+                        Divider()
+                            .background(Color.ccTextDim.opacity(0.1))
+                    }
+
+                    // 手动重启按钮
+                    Button {
+                        Task { await triggerSwap() }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if processing {
+                                ProgressView()
+                                    .tint(Color.ccAccent)
+                                    .padding(.trailing, 8)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Color.ccAccent)
+                            }
+                            Text("立即重启 Claude 终端")
+                                .font(.ccSerifAdaptive(size: 14))
+                                .foregroundStyle(Color.ccAccent)
+                                .bold()
+                            Spacer()
+                        }
+                        .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(processing)
+                }
+            }
+            .background(Color.ccCard)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .overlay(alignment: .bottom) {
+            if let t = toast {
+                Text(t)
+                    .font(.ccSerifAdaptive(size: 13))
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Color.ccCard)
+                    .foregroundStyle(Color.ccAccent)
+                    .clipShape(Capsule())
+                    .padding(.bottom, 24)
+            }
+        }
+        .task {
+            await fetchPresets()
+        }
+    }
+
+    private func fetchPresets() async {
+        loading = true
+        let url = CcServerConfig.serverURL.appendingPathComponent("claude/presets")
+        do {
+            let (data, _) = try await URLSession.shared.data(for: CcServerConfig.authenticatedRequest(url: url))
+            let res = try JSONDecoder().decode(PresetResponse.self, from: data)
+            presets = res.presets
+            activeId = res.active
+        } catch {
+            print("Failed to fetch presets: \(error)")
+        }
+        loading = false
+    }
+
+    private func applyPreset(_ id: String) async {
+        guard id != activeId else { return }
+        processing = true
+        toast = "切换中并重启…"
+
+        let url = CcServerConfig.serverURL.appendingPathComponent("claude/presets/apply")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let secret = CcServerConfig.sharedSecret, !secret.isEmpty {
+            req.setValue(secret, forHTTPHeaderField: "X-Auth-Token")
+        }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["id": id, "swap": true])
+
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if (200...299).contains(code) {
+                if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let ok = obj["ok"] as? Bool {
+                    if ok {
+                        activeId = id
+                        toast = "已切换，终端正在重启…"
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    } else {
+                        let err = obj["error"] as? String ?? "未知错误"
+                        toast = "切换失败: \(err)"
+                    }
+                } else {
+                    toast = "返回解析失败"
+                }
+            } else {
+                toast = "切换失败 (\(code))"
+            }
+        } catch {
+            toast = "网络错误: \(error.localizedDescription)"
+        }
+
+        processing = false
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            toast = nil
+        }
+    }
+
+    private func triggerSwap() async {
+        processing = true
+        toast = "正在重启终端…"
+
+        let url = CcServerConfig.serverURL.appendingPathComponent("claude/swap")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        if let secret = CcServerConfig.sharedSecret, !secret.isEmpty {
+            req.setValue(secret, forHTTPHeaderField: "X-Auth-Token")
+        }
+
+        do {
+            let (_, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if (200...299).contains(code) {
+                toast = "已发送重启指令，请稍候"
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            } else {
+                toast = "重启失败 (\(code))"
+            }
+        } catch {
+            toast = "网络错误: \(error.localizedDescription)"
+        }
+
+        processing = false
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            toast = nil
         }
     }
 }

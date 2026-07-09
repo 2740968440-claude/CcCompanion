@@ -82,6 +82,8 @@ try:
 except ImportError:
     rp_session_manager = None
 
+import claude_presets
+
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIG = HERE / "config.toml"
@@ -792,6 +794,9 @@ class PushHandler(BaseHTTPRequestHandler):
                 return
             self._handle_tmux_capture()
             return
+        if self.path == "/claude/presets":
+            self._send_json(200, claude_presets.list_presets())
+            return
         if self.path == "/tmux/sessions/order":
             if not self.state.allow_remote_control:
                 self._send_json(403, {"error": "remote_control disabled"})
@@ -1172,6 +1177,19 @@ class PushHandler(BaseHTTPRequestHandler):
             for k, v in body.items():
                 self.state.settings.set(k, v)
             self._send_json(200, {"ok": True, "settings": self.state.settings.snapshot()})
+            return
+        elif self.path == "/claude/presets/apply":
+            preset_id = body.get("id", "")
+            swap = body.get("swap", False)
+            if swap:
+                result = claude_presets.apply_and_swap(preset_id)
+            else:
+                result = claude_presets.apply_preset(preset_id)
+            self._send_json(200 if result.get("ok") else 400, result)
+            return
+        elif self.path == "/claude/swap":
+            result = claude_presets.trigger_swap()
+            self._send_json(200 if result.get("ok") else 500, result)
             return
         else:
             self._send_json(404, {"error": "not found"})
