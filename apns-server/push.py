@@ -5004,10 +5004,12 @@ class PushHandler(BaseHTTPRequestHandler):
         events: list[dict[str, Any]] = []
         recent = self.state.approvals.list_recent(limit=30)
         for evt in recent:
-            if since and evt.get("ts", "") <= since:
+            status = evt["status"]
+            # pending 审批：无论 since 是什么，始终返回（切回 App 时不会消失）
+            # approved/denied 更新消息：才用 since 过滤，避免重复
+            if status not in ("pending",) and since and evt.get("updated_at", evt.get("ts", "")) <= since:
                 continue
 
-            status = evt["status"]
             display = evt.get("display", evt.get("command", ""))
 
             if status == "pending":
