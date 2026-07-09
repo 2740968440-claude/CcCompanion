@@ -5016,48 +5016,13 @@ class PushHandler(BaseHTTPRequestHandler):
             if status == "pending":
                 events.append({
                     "ts": evt["ts"],
-                    "type": "approval",
-                    "approval_id": evt["id"],
-                    "role": "system",
-                    "text": f"⏳ 需要批准\n{summary or display}",
-                    "command": evt.get("command", ""),
-                    "summary": summary,
-                    "status": "pending",
-                    "actions": ["allow", "deny"],
+                    "type": "assistant",
+                    "role": "assistant",
+                    "text": "⏳ 待审批",
                 })
-            elif status == "approved_waiting_prompt":
-                events.append({
-                    "ts": evt["updated_at"],
-                    "type": "approval_update",
-                    "approval_id": evt["id"],
-                    "role": "system",
-                    "text": f"⏳ 等待终端就绪…\n{summary or display}",
-                    "summary": summary,
-                    "status": "approved_waiting_prompt",
-                    "actions": [],
-                })
-            elif status == "approved":
-                events.append({
-                    "ts": evt["updated_at"],
-                    "type": "approval_update",
-                    "approval_id": evt["id"],
-                    "role": "system",
-                    "text": f"已批准\n{summary or display}",
-                    "summary": summary,
-                    "status": "approved",
-                    "actions": [],
-                })
-            elif status == "denied":
-                events.append({
-                    "ts": evt["updated_at"],
-                    "type": "approval_update",
-                    "approval_id": evt["id"],
-                    "role": "system",
-                    "text": f"已拒绝\n{summary or display}",
-                    "summary": summary,
-                    "status": "denied",
-                    "actions": [],
-                })
+            elif status in ("approved_waiting_prompt", "approved", "denied"):
+                # 状态变化不再推更新消息，避免多余噪音
+                pass
 
         return events
 
