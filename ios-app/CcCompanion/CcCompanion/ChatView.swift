@@ -1721,7 +1721,10 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func mergeUnique(_ records: [ChatMessage]) {
-        chatStore.upsert(records)
+        // approval/approval_update 不写 GRDB：StoredChatMessage 缺少 type/approvalId 等字段，
+        // 写入后读回 type=nil，卡片退化为普通文字。pending approval 由 server 重新下发，无需本地缓存。
+        let persistable = records.filter { $0.type != "approval" && $0.type != "approval_update" }
+        if !persistable.isEmpty { chatStore.upsert(persistable) }
         let existing = Set(self.messages.map { $0.id })
         var added = false
         for r in records where !existing.contains(r.id) {
