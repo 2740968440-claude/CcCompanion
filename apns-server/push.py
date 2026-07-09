@@ -5011,6 +5011,7 @@ class PushHandler(BaseHTTPRequestHandler):
                 continue
 
             display = evt.get("display", evt.get("command", ""))
+            summary = evt.get("summary", "")  # 来自 approval_notify.py 的操作摘要
 
             if status == "pending":
                 events.append({
@@ -5018,8 +5019,9 @@ class PushHandler(BaseHTTPRequestHandler):
                     "type": "approval",
                     "approval_id": evt["id"],
                     "role": "system",
-                    "text": f"⏳ 需要批准\n{display}",
+                    "text": f"⏳ 需要批准\n{summary or display}",
                     "command": evt.get("command", ""),
+                    "summary": summary,
                     "status": "pending",
                     "actions": ["allow", "deny"],
                 })
@@ -5029,7 +5031,8 @@ class PushHandler(BaseHTTPRequestHandler):
                     "type": "approval_update",
                     "approval_id": evt["id"],
                     "role": "system",
-                    "text": f"⏳ 等待终端就绪…\n{display}",
+                    "text": f"⏳ 等待终端就绪…\n{summary or display}",
+                    "summary": summary,
                     "status": "approved_waiting_prompt",
                     "actions": [],
                 })
@@ -5039,7 +5042,8 @@ class PushHandler(BaseHTTPRequestHandler):
                     "type": "approval_update",
                     "approval_id": evt["id"],
                     "role": "system",
-                    "text": f"已批准\n{display}",
+                    "text": f"已批准\n{summary or display}",
+                    "summary": summary,
                     "status": "approved",
                     "actions": [],
                 })
@@ -5049,7 +5053,8 @@ class PushHandler(BaseHTTPRequestHandler):
                     "type": "approval_update",
                     "approval_id": evt["id"],
                     "role": "system",
-                    "text": f"已拒绝\n{display}",
+                    "text": f"已拒绝\n{summary or display}",
+                    "summary": summary,
                     "status": "denied",
                     "actions": [],
                 })

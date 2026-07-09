@@ -372,6 +372,7 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     var type: String? = nil
     var approvalId: String? = nil
     var command: String? = nil
+    var approvalSummary: String? = nil
     var approvalStatus: String? = nil
     var actions: [String]? = nil
 
@@ -395,6 +396,7 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         case type
         case approvalId = "approval_id"
         case command
+        case approvalSummary = "summary"
         case approvalStatus = "status"
         case actions
     }
@@ -621,6 +623,7 @@ struct ApprovalEvent: Identifiable, Hashable, Sendable {
     let approvalId: String
     let text: String
     let command: String?
+    let summary: String?
     let status: String   // pending / approved_waiting_prompt / approved / denied
     let actions: [String]  // ["allow", "deny"]
 }
@@ -989,6 +992,7 @@ final class ChatViewModel: ObservableObject {
                     approvalId: aid,
                     text: msg.text,
                     command: msg.command,
+                    summary: msg.approvalSummary,
                     status: msg.approvalStatus ?? "pending",
                     actions: msg.actions ?? ["allow", "deny"]
                 )
@@ -1001,6 +1005,7 @@ final class ChatViewModel: ObservableObject {
                 var updated = approvalEvents[aid] ?? ApprovalEvent(
                     id: msg.id, ts: msg.ts, approvalId: aid,
                     text: msg.text, command: msg.command,
+                    summary: msg.approvalSummary,
                     status: msg.approvalStatus ?? "pending",
                     actions: msg.actions ?? []
                 )
@@ -1009,6 +1014,7 @@ final class ChatViewModel: ObservableObject {
                     id: updated.id, ts: updated.ts, approvalId: aid,
                     text: msg.text.isEmpty ? updated.text : msg.text,
                     command: msg.command ?? updated.command,
+                    summary: msg.approvalSummary ?? updated.summary,
                     status: msg.approvalStatus ?? updated.status,
                     actions: updated.actions
                 )
@@ -8277,12 +8283,13 @@ struct ApprovalCardView: View {
         return event.text
     }
 
-    private var detailText: String? {
-        // 第二行及之后是描述内容
+    /// 卡片正面显示的摘要文字：优先用 summary 字段（assistant 的说明文字），
+    /// 没有才退回 text 第二行（命令简述）。
+    private var summaryText: String? {
+        if let s = event.summary, !s.isEmpty { return s }
+        // 退回：text 第二行（旧格式兼容）
         let lines = event.text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
-        if lines.count > 1 {
-            return String(lines[1])
-        }
+        if lines.count > 1 { return String(lines[1]) }
         return nil
     }
 
@@ -8307,9 +8314,9 @@ struct ApprovalCardView: View {
                 }
             }
 
-            // 描述行 (命令简述, 始终显示)
-            if let detail = detailText {
-                Text(detail)
+            // 摘要行（操作说明，始终显示）
+            if let summary = summaryText {
+                Text(summary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
