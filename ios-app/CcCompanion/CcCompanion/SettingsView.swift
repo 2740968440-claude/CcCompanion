@@ -2453,15 +2453,7 @@ struct ClaudePresetSection: View {
     // MARK: - Constants
     private static let defaultModels = [
         "deepseek-v4-flash",
-        "deepseek-v4",
-        "deepseek-v4-pro-0225",
-        "claude-sonnet-5-20251001",
-        "claude-opus-4-8-20251001",
-        "claude-haiku-4-5-20251001",
-        "claude-fable-5-20251001",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gpt-4o",
+        "deepseek-v4-pro",
     ]
     private let effortLevels = ["low", "medium", "high", "xhigh", "max"]
 
@@ -2552,6 +2544,7 @@ struct ClaudePresetSection: View {
                         }
                     }
                     .pickerStyle(.menu)
+                    .fixedSize(horizontal: true, vertical: false)
 
                     Button {
                         Task { await fetchModels() }
@@ -2640,6 +2633,7 @@ struct ClaudePresetSection: View {
             print("Failed to load current config: \(error)")
         }
         loading = false
+        if !apiKey.isEmpty { await fetchModels() }
     }
 
     private func fetchModels() async {
@@ -2648,8 +2642,11 @@ struct ClaudePresetSection: View {
         fetchingModels = true
         defer { fetchingModels = false }
 
+        // 取 origin（协议+域名），去掉路径前缀，再拼 /v1/models
+        // 例: https://api.deepseek.com/anthropic → https://api.deepseek.com/v1/models
         let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
-        guard let modelsURL = URL(string: "\(base)/v1/models") else {
+        guard let baseParsed = URL(string: base),
+              let modelsURL = URL(string: "/v1/models", relativeTo: baseParsed)?.absoluteURL else {
             modelList = Self.defaultModels
             return
         }
@@ -2674,7 +2671,7 @@ struct ClaudePresetSection: View {
         } catch {
             print("fetch models failed: \(error)")
         }
-        modelList = Self.defaultModels
+        // 失败不清零，保持当前列表
     }
 
     private func saveAndRestart() async {
