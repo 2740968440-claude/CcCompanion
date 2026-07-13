@@ -64,3 +64,46 @@ def apply_and_swap(preset_id: str) -> dict:
     swap_result = trigger_swap()
     result["swap"] = swap_result.get("ok", False)
     return result
+
+
+def get_current_config() -> dict:
+    """读取当前 settings.json 的配置字段，供 iOS 自定义表单使用。"""
+    if not SETTINGS_FILE.exists():
+        return {"ok": True, "base_url": "", "api_key": "", "model": "",
+                "autoCompact": False, "effortLevel": "low"}
+    cfg = json.loads(SETTINGS_FILE.read_text())
+    env = cfg.get("env", {})
+    return {
+        "ok": True,
+        "base_url": env.get("ANTHROPIC_BASE_URL", ""),
+        "api_key": env.get("ANTHROPIC_AUTH_TOKEN", ""),
+        "model": env.get("ANTHROPIC_MODEL", ""),
+        "autoCompact": cfg.get("autoCompactEnabled", False),
+        "effortLevel": cfg.get("effortLevel", "low"),
+    }
+
+
+def save_custom(body: dict) -> dict:
+    """保存自定义配置（URL/API key/模型/autoCompact/effortLevel）"""
+    if not SETTINGS_FILE.exists():
+        return {"ok": False, "error": "settings.json not found"}
+    cfg = json.loads(SETTINGS_FILE.read_text())
+    env = cfg.setdefault("env", {})
+
+    if "base_url" in body:
+        env["ANTHROPIC_BASE_URL"] = body["base_url"]
+    if "api_key" in body:
+        env["ANTHROPIC_AUTH_TOKEN"] = body["api_key"]
+    if "model" in body and body["model"]:
+        model = body["model"]
+        env["ANTHROPIC_MODEL"] = model
+        # 映射到所有层级
+        for tier in ("OPUS", "SONNET", "HAIKU", "FABLE"):
+            env[f"ANTHROPIC_DEFAULT_{tier}_MODEL"] = model
+    if "autoCompact" in body:
+        cfg["autoCompactEnabled"] = bool(body["autoCompact"])
+    if "effortLevel" in body:
+        cfg["effortLevel"] = str(body["effortLevel"])
+
+    SETTINGS_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+    return {"ok": True}

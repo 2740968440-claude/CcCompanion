@@ -797,6 +797,9 @@ class PushHandler(BaseHTTPRequestHandler):
         if self.path == "/claude/presets":
             self._send_json(200, claude_presets.list_presets())
             return
+        if self.path == "/claude/presets/current":
+            self._send_json(200, claude_presets.get_current_config())
+            return
         if self.path == "/tmux/sessions/order":
             if not self.state.allow_remote_control:
                 self._send_json(403, {"error": "remote_control disabled"})
@@ -1185,6 +1188,13 @@ class PushHandler(BaseHTTPRequestHandler):
                 result = claude_presets.apply_and_swap(preset_id)
             else:
                 result = claude_presets.apply_preset(preset_id)
+            self._send_json(200 if result.get("ok") else 400, result)
+            return
+        elif self.path == "/claude/presets/save":
+            result = claude_presets.save_custom(body)
+            if body.get("swap", False) and result.get("ok"):
+                swap_result = claude_presets.trigger_swap()
+                result["swap"] = swap_result.get("ok", False)
             self._send_json(200 if result.get("ok") else 400, result)
             return
         elif self.path == "/claude/swap":
@@ -5018,7 +5028,7 @@ class PushHandler(BaseHTTPRequestHandler):
                     "ts": evt["ts"],
                     "type": "assistant",
                     "role": "assistant",
-                    "text": "⏳ 待审批",
+                    "text": f"⏳ 待审批：{display}",
                 })
             elif status in ("approved_waiting_prompt", "approved", "denied"):
                 # 状态变化不再推更新消息，避免多余噪音

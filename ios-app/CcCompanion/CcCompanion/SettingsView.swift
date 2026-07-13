@@ -2424,26 +2424,48 @@ struct TerminalSessionOrderView: View {
 }
 
 // build227 — 切换预置方案 (Claude Preset Section)
+// 2026-07-13 改版：自定义表单（URL/API Key/模型/autoCompact/effortLevel）
 struct ClaudePresetSection: View {
-    struct Preset: Codable, Identifiable {
-        let id: String
-        let label: String
-        let file: String
-        let description: String
-    }
-
-    struct PresetResponse: Codable {
+    // MARK: - Current config
+    struct CurrentConfig: Codable {
         let ok: Bool
-        let presets: [Preset]
-        let active: String
+        let base_url: String
+        let api_key: String
+        let model: String
+        let autoCompact: Bool
+        let effortLevel: String
     }
 
-    @State private var presets: [Preset] = []
-    @State private var activeId: String = ""
+    // MARK: - State
+    @State private var baseURL: String = ""
+    @State private var apiKey: String = ""
+    @State private var selectedModel: String = ""
+    @State private var autoCompact: Bool = false
+    @State private var effortLevel: String = "low"
+
     @State private var loading: Bool = true
     @State private var processing: Bool = false
     @State private var toast: String? = nil
+    @State private var showApiKey: Bool = false
+    @State private var modelList: [String] = Self.defaultModels
+    @State private var fetchingModels: Bool = false
 
+    // MARK: - Constants
+    private static let defaultModels = [
+        "deepseek-v4-flash",
+        "deepseek-v4",
+        "deepseek-v4-pro-0225",
+        "claude-sonnet-5-20251001",
+        "claude-opus-4-8-20251001",
+        "claude-haiku-4-5-20251001",
+        "claude-fable-5-20251001",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gpt-4o",
+    ]
+    private let effortLevels = ["low", "medium", "high", "xhigh", "max"]
+
+    // MARK: - Body
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("配置方案")
@@ -2461,87 +2483,8 @@ struct ClaudePresetSection: View {
                         Spacer()
                     }
                     .padding(.vertical, 20)
-                } else if presets.isEmpty {
-                    HStack {
-                        Spacer()
-                        Text("无可用配置方案")
-                            .font(.system(.callout, design: .monospaced))
-                            .foregroundStyle(Color.ccTextDim)
-                        Spacer()
-                    }
-                    .padding(.vertical, 20)
                 } else {
-                    ForEach(presets) { preset in
-                        Button {
-                            Task { await applyPreset(preset.id) }
-                        } label: {
-                            HStack(alignment: .top, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack(spacing: 8) {
-                                        Text(preset.label)
-                                            .font(.ccSerifAdaptive(size: 15))
-                                            .foregroundStyle(preset.id == activeId ? Color.ccAccent : Color.ccText)
-                                            .bold(preset.id == activeId)
-
-                                        if preset.id == activeId {
-                                            Text("ACTIVE")
-                                                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                                .padding(.horizontal, 5)
-                                                .padding(.vertical, 2)
-                                                .background(Color.ccAccent.opacity(0.15))
-                                                .foregroundStyle(Color.ccAccent)
-                                                .clipShape(RoundedRectangle(cornerRadius: 3))
-                                        }
-                                    }
-
-                                    Text(preset.description)
-                                        .font(.system(.caption, design: .monospaced))
-                                        .foregroundStyle(Color.ccTextDim)
-                                        .multilineTextAlignment(.leading)
-                                }
-                                Spacer()
-                                if preset.id == activeId {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 14, weight: .bold))
-                                        .foregroundStyle(Color.ccAccent)
-                                        .padding(.top, 2)
-                                }
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 12)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(processing)
-
-                        Divider()
-                            .background(Color.ccTextDim.opacity(0.1))
-                    }
-
-                    // 手动重启按钮
-                    Button {
-                        Task { await triggerSwap() }
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if processing {
-                                ProgressView()
-                                    .tint(Color.ccAccent)
-                                    .padding(.trailing, 8)
-                            } else {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(Color.ccAccent)
-                            }
-                            Text("立即重启 Claude 终端")
-                                .font(.ccSerifAdaptive(size: 14))
-                                .foregroundStyle(Color.ccAccent)
-                                .bold()
-                            Spacer()
-                        }
-                        .padding(.vertical, 12)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(processing)
+                    formContent
                 }
             }
             .background(Color.ccCard)
@@ -2558,58 +2501,219 @@ struct ClaudePresetSection: View {
                     .padding(.bottom, 24)
             }
         }
-        .task {
-            await fetchPresets()
+        .task { await loadCurrentConfig() }
+    }
+
+    // MARK: - Form
+    private var formContent: some View {
+        VStack(spacing: 0) {
+            // URL 地址
+            FormField(label: "URL 地址") {
+                TextField("https://api.deepseek.com/anthropic", text: $baseURL)
+                    .textContentType(.URL)
+                    .keyboardType(.URL)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+            }
+
+            Divider().background(Color.ccTextDim.opacity(0.1))
+
+            // API Key
+            FormField(label: "API Key") {
+                HStack(spacing: 4) {
+                    if showApiKey {
+                        TextField("sk-xxxxxxxx", text: $apiKey)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                    } else {
+                        SecureField("sk-xxxxxxxx", text: $apiKey)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                    }
+                    Button {
+                        showApiKey.toggle()
+                    } label: {
+                        Image(systemName: showApiKey ? "eye.slash" : "eye")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.ccTextDim)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Divider().background(Color.ccTextDim.opacity(0.1))
+
+            // 模型
+            FormField(label: "模型") {
+                HStack(spacing: 6) {
+                    Picker("模型", selection: $selectedModel) {
+                        ForEach(modelList, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    Button {
+                        Task { await fetchModels() }
+                    } label: {
+                        if fetchingModels {
+                            ProgressView()
+                                .tint(Color.ccAccent)
+                                .scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color.ccAccent)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(fetchingModels)
+                }
+            }
+
+            Divider().background(Color.ccTextDim.opacity(0.1))
+
+            // autoCompact
+            FormField(label: "autoCompact") {
+                Picker("autoCompact", selection: $autoCompact) {
+                    Text("开启").tag(true)
+                    Text("关闭").tag(false)
+                }
+                .pickerStyle(.menu)
+            }
+
+            Divider().background(Color.ccTextDim.opacity(0.1))
+
+            // effortLevel
+            FormField(label: "effortLevel") {
+                Picker("effortLevel", selection: $effortLevel) {
+                    ForEach(effortLevels, id: \.self) { level in
+                        Text(level.capitalized).tag(level)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+
+            Divider().background(Color.ccTextDim.opacity(0.1))
+
+            // 立即重启按钮
+            Button {
+                Task { await saveAndRestart() }
+            } label: {
+                HStack {
+                    Spacer()
+                    if processing {
+                        ProgressView()
+                            .tint(Color.ccAccent)
+                            .padding(.trailing, 8)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.ccAccent)
+                    }
+                    Text("立即重启 Claude 终端")
+                        .font(.ccSerifAdaptive(size: 14))
+                        .foregroundStyle(Color.ccAccent)
+                        .bold()
+                    Spacer()
+                }
+                .padding(.vertical, 12)
+            }
+            .buttonStyle(.plain)
+            .disabled(processing)
         }
     }
 
-    private func fetchPresets() async {
+    // MARK: - Actions
+    private func loadCurrentConfig() async {
         loading = true
-        let url = CcServerConfig.serverURL.appendingPathComponent("claude/presets")
+        let url = CcServerConfig.serverURL.appendingPathComponent("claude/presets/current")
         do {
             let (data, _) = try await URLSession.shared.data(for: CcServerConfig.authenticatedRequest(url: url))
-            let res = try JSONDecoder().decode(PresetResponse.self, from: data)
-            presets = res.presets
-            activeId = res.active
+            let cfg = try JSONDecoder().decode(CurrentConfig.self, from: data)
+            baseURL = cfg.base_url
+            apiKey = cfg.api_key
+            selectedModel = cfg.model
+            autoCompact = cfg.autoCompact
+            effortLevel = cfg.effortLevel
         } catch {
-            print("Failed to fetch presets: \(error)")
+            print("Failed to load current config: \(error)")
         }
         loading = false
     }
 
-    private func applyPreset(_ id: String) async {
-        guard id != activeId else { return }
-        processing = true
-        toast = "切换中并重启…"
+    private func fetchModels() async {
+        guard !apiKey.isEmpty else { return }
 
-        let url = CcServerConfig.serverURL.appendingPathComponent("claude/presets/apply")
+        fetchingModels = true
+        defer { fetchingModels = false }
+
+        let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+        guard let modelsURL = URL(string: "\(base)/v1/models") else {
+            modelList = Self.defaultModels
+            return
+        }
+
+        var req = URLRequest(url: modelsURL)
+        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 8
+
+        do {
+            let (data, _) = try await URLSession.shared.data(for: req)
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let rawModels = json["data"] as? [[String: Any]] {
+                let ids = rawModels.compactMap { $0["id"] as? String }.sorted()
+                if !ids.isEmpty {
+                    modelList = ids
+                    if !ids.contains(selectedModel) {
+                        selectedModel = ids.first ?? selectedModel
+                    }
+                    return
+                }
+            }
+        } catch {
+            print("fetch models failed: \(error)")
+        }
+        modelList = Self.defaultModels
+    }
+
+    private func saveAndRestart() async {
+        processing = true
+        toast = "保存并重启…"
+
+        let body: [String: Any] = [
+            "base_url": baseURL,
+            "api_key": apiKey,
+            "model": selectedModel,
+            "autoCompact": autoCompact,
+            "effortLevel": effortLevel,
+            "swap": true,
+        ]
+
+        let url = CcServerConfig.serverURL.appendingPathComponent("claude/presets/save")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let secret = CcServerConfig.sharedSecret, !secret.isEmpty {
             req.setValue(secret, forHTTPHeaderField: "X-Auth-Token")
         }
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["id": id, "swap": true])
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             if (200...299).contains(code) {
                 if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let ok = obj["ok"] as? Bool {
-                    if ok {
-                        activeId = id
-                        toast = "已切换，终端正在重启…"
-                        try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    } else {
-                        let err = obj["error"] as? String ?? "未知错误"
-                        toast = "切换失败: \(err)"
-                    }
+                   let ok = obj["ok"] as? Bool, ok {
+                    toast = "已保存，终端正在重启…"
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
                 } else {
-                    toast = "返回解析失败"
+                    let err = (try? JSONSerialization.jsonObject(with: data))
+                        .flatMap { ($0 as? [String: Any])?["error"] as? String } ?? "保存失败"
+                    toast = err
                 }
             } else {
-                toast = "切换失败 (\(code))"
+                toast = "保存失败 (\(code))"
             }
         } catch {
             toast = "网络错误: \(error.localizedDescription)"
@@ -2621,35 +2725,28 @@ struct ClaudePresetSection: View {
             toast = nil
         }
     }
+}
 
-    private func triggerSwap() async {
-        processing = true
-        toast = "正在重启终端…"
+// MARK: - FormField helper
+private struct FormField<Content: View>: View {
+    let label: String
+    @ViewBuilder let content: Content
 
-        let url = CcServerConfig.serverURL.appendingPathComponent("claude/swap")
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        if let secret = CcServerConfig.sharedSecret, !secret.isEmpty {
-            req.setValue(secret, forHTTPHeaderField: "X-Auth-Token")
+    var body: some View {
+        HStack(spacing: 0) {
+            Text(label)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.ccTextDim)
+                .frame(width: 90, alignment: .leading)
+                .padding(.leading, 16)
+
+            content
+                .font(.system(.callout, design: .monospaced))
+                .foregroundStyle(Color.ccText)
+                .padding(.trailing, 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-
-        do {
-            let (_, resp) = try await URLSession.shared.data(for: req)
-            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            if (200...299).contains(code) {
-                toast = "已发送重启指令，请稍候"
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-            } else {
-                toast = "重启失败 (\(code))"
-            }
-        } catch {
-            toast = "网络错误: \(error.localizedDescription)"
-        }
-
-        processing = false
-        Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            toast = nil
-        }
+        .padding(.vertical, 10)
+        .frame(minHeight: 40)
     }
 }
